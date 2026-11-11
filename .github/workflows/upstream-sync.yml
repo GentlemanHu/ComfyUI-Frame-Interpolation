@@ -1,0 +1,54 @@
+name: Upstream Sync (48h)
+
+on:
+  schedule:
+    # GitHub cron cannot express a true 48-hour interval across month boundaries.
+    # Check every day and run on alternating UTC calendar days.
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: upstream-sync-main
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check 48-hour cadence
+        id: cadence
+        shell: bash
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == 'workflow_dispatch' ]] || (( ( $(date -u +%s) / 86400 ) % 2 == 0 )); then
+            echo 'run=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'run=false' >> "$GITHUB_OUTPUT"
+            echo 'Not a scheduled 48-hour sync day.'
+          fi
+
+      - name: Checkout fork main
+        if: steps.cadence.outputs.run == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Merge upstream changes safely
+        if: steps.cadence.outputs.run == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote add upstream https://github.com/Fannovel16/ComfyUI-Frame-Interpolation.git
+          git fetch origin main
+          git fetch upstream main
+          git checkout -B main origin/main
+          # Merge without --force; preserve fork-specific commits.
+          # On conflicts, fail rather than overwriting local patches.
+          git merge --no-edit upstream/main
+          git push origin HEAD:main
