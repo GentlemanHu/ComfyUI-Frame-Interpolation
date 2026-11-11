@@ -54,7 +54,10 @@ with zipfile.ZipFile(io.BytesIO(archive)) as zf:
         state = torch.load(io.BytesIO(stream.read()), weights_only=True, map_location="cpu")
 if "state_dict" in state:
     state = state["state_dict"]
-state = {k.removeprefix("module."): v for k, v in state.items()}
+state = {
+    name: tensor for k, tensor in state.items()
+    if not (name := k.removeprefix("module.")).startswith(("teacher.", "caltime."))
+}
 model = module.IFNet(arch_ver="4.26")
 model.load_state_dict(state, strict=True)
 model.eval()
