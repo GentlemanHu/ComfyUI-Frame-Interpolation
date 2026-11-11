@@ -231,6 +231,7 @@ class RIFEInterpolation:
                     while pos < len(tasks):
                         count = min(chunk_size, len(tasks) - pos)
                         current = tasks[pos:pos + count]
+                        frame0 = frame1 = ts = predicted = None
                         try:
                             frame0 = torch.stack(
                                 [images[i0] for _, i0, _, _ in current]
@@ -266,9 +267,7 @@ class RIFEInterpolation:
                                 ) from exc
                             # Discard GPU allocations from the failed batch and
                             # continue from the same task with a smaller batch.
-                            for var in ("predicted", "frame0", "frame1", "ts"):
-                                if var in locals():
-                                    del locals()[var]
+                            predicted = ts = frame0 = frame1 = None
                             gc.collect()
                             torch.cuda.empty_cache()
                             chunk_size = max(1, count // 2)
