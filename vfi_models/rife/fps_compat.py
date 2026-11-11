@@ -132,7 +132,15 @@ def _get_model(model_name, use_fp16):
             state = state["state_dict"]
         if not isinstance(state, dict):
             raise RuntimeError("RIFE checkpoint is not a state-dict")
-        state = {k.removeprefix("module."): v for k, v in state.items()}
+        # Official 4.26 checkpoints include training-only teacher/caltime
+        # tensors absent from the inference-only network. Reject all other
+        # missing/unexpected keys rather than silently using random weights.
+        state = {
+            name: tensor for k, tensor in state.items()
+            if not (name := k.removeprefix("module.")).startswith(
+                ("teacher.", "caltime.")
+            )
+        }
         model.load_state_dict(state, strict=True)
         model.eval().requires_grad_(False)
         if use_fp16:
