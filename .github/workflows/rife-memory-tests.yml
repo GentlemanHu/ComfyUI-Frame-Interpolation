@@ -5,11 +5,13 @@ on:
     paths:
       - 'vfi_models/rife/**'
       - 'tests/test_rife_memory.py'
+      - 'tests/test_rife_fps_compat.py'
       - '.github/workflows/rife-memory-tests.yml'
   pull_request:
     paths:
       - 'vfi_models/rife/**'
       - 'tests/test_rife_memory.py'
+      - 'tests/test_rife_fps_compat.py'
 
 permissions:
   contents: read
@@ -30,4 +32,4 @@ jobs:
       - name: Compile RIFE sources
         run: python -m compileall -q vfi_models/rife
       - name: CPU-only RIFE regression tests
-        run: python -m unittest discover -s tests -p 'test_rife_memory.py' -v
+        run: python -m unittest discover -s tests -p 'test_rife_*.py' -v
