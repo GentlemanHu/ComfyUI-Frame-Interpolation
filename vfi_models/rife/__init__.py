@@ -3,6 +3,7 @@ import torch
 import pathlib
 from vfi_utils import load_file_from_github_release, preprocess_frames, postprocess_frames, InterpolationStateList
 import typing
+from .output_buffer import allocate_output, output_layout
 from comfy.model_management import get_torch_device, soft_empty_cache
 from packaging import version
 
@@ -66,7 +67,11 @@ class RIFE_VFI:
                                                   "Set to 1 for the most conservative behaviour."}),
             },
             "optional": {
-                "optional_interpolation_states": ("INTERPOLATION_STATES", )
+                "optional_interpolation_states": ("INTERPOLATION_STATES", ),
+                "output_storage": (["auto", "ram", "disk"], {"default": "auto",
+                    "tooltip": "Auto keeps normal fast CPU memory when safe, otherwise uses a disk-backed output buffer."}),
+                "reserve_ram_gb": ("FLOAT", {"default": 2.0, "min": 0.0, "max": 64.0, "step": 0.5,
+                    "tooltip": "RAM headroom to preserve when choosing the output buffer storage."}),
             }
         }
 
@@ -87,6 +92,8 @@ class RIFE_VFI:
         torch_compile: bool = False,
         batch_size: int = 1,
         optional_interpolation_states: InterpolationStateList = None,
+        output_storage: str = "auto",
+        reserve_ram_gb: float = 2.0,
         **kwargs
     ):
         """
@@ -128,6 +135,12 @@ class RIFE_VFI:
         # executions skip the load_state_dict + device transfer entirely.
         cache_key = (ckpt_name, dtype, torch_compile)
         if cache_key not in _model_cache:
+            # Prevent unbounded resident GPU model/compiled-graph variants.
+            # Repeated calls with unchanged settings still reuse the model.
+            if _model_cache:
+                _model_cache.clear()
+                gc.collect()
+                soft_empty_cache()
             interpolation_model = IFNet(arch_ver=arch_ver)
             interpolation_model.load_state_dict(torch.load(model_path, weights_only=False))
             if torch_dtype != torch.float32:
@@ -159,23 +172,28 @@ class RIFE_VFI:
         else:
             scale_list = [8 / scale_factor, 4 / scale_factor, 2 / scale_factor, 1 / scale_factor]
 
-        # Build a flat list of all (pair_idx, timestep) tasks, skipping excluded pairs.
-        # Each task produces exactly one intermediate frame.
-        tasks: typing.List[typing.Tuple[int, float]] = []
-        tasks_remaining_per_pair: typing.Dict[int, int] = {}
-        for pair_idx in range(n_pairs):
-            if optional_interpolation_states is not None and optional_interpolation_states.is_frame_skipped(pair_idx):
-                tasks_remaining_per_pair[pair_idx] = 0
-                continue
-            m = multipliers[pair_idx]
-            n_steps = max(m - 1, 0)
-            tasks_remaining_per_pair[pair_idx] = n_steps
-            for step in range(1, m):
-                tasks.append((pair_idx, step / m))
-
-        # Storage for intermediate frames, keyed by pair index
-        results: typing.Dict[int, typing.List[torch.Tensor]] = {i: [] for i in range(n_pairs)}
-
+        # Precompute exact output positions before inference. We never accumulate
+        # a list of all intermediate frames or duplicate the final video with cat().
+        skip_flags = [
+            optional_interpolation_states is not None
+            and optional_interpolation_states.is_frame_skipped(i)
+            for i in range(n_pairs)
+        ]
+        original_positions, tasks, output_count = output_layout(
+            len(frames), multipliers, skip_flags
+        )
+        output_frames = allocate_output(
+            (output_count, *frames.shape[1:]), output_storage, reserve_ram_gb
+        )
+        for pair_idx, out_idx in enumerate(original_positions):
+            output_frames[out_idx].copy_(
+                frames[pair_idx].to(device="cpu", dtype=torch.float32)
+            )
+        output_frames[-1].copy_(frames[-1].to(device="cpu", dtype=torch.float32))
+        tasks_remaining_per_pair = {
+            i: 0 if skip_flags[i] else max(int(multipliers[i]) - 1, 0)
+            for i in range(n_pairs)
+        }
         frames_processed_since_cache_clear = 0
         pos = 0
 
@@ -187,7 +205,7 @@ class RIFE_VFI:
                 batch_tasks = tasks[pos : pos + batch_size]
 
                 frame0_list, frame1_list, timestep_list = [], [], []
-                for pair_idx, dt in batch_tasks:
+                for pair_idx, dt, _ in batch_tasks:
                     frame0_list.append(frames[pair_idx : pair_idx + 1])
                     frame1_list.append(frames[pair_idx + 1 : pair_idx + 2])
                     timestep_list.append(dt)
@@ -204,36 +222,24 @@ class RIFE_VFI:
                     scale_list,
                     fast_mode,
                     ensemble,
-                ).clamp(0, 1).detach().cpu()
+                ).clamp(0, 1).detach()
 
-                for idx, (pair_idx, _) in enumerate(batch_tasks):
-                    results[pair_idx].append(middle_frames[idx : idx + 1].to(dtype=torch_dtype))
+                # Copy each GPU result directly to its final FP32 CPU slot;
+                # no per-frame CPU lists, cat(), or full-video dtype conversion.
+                for idx, (pair_idx, _, out_idx) in enumerate(batch_tasks):
+                    output_frames[out_idx].copy_(
+                        middle_frames[idx].to(device="cpu", dtype=torch.float32)
+                    )
                     tasks_remaining_per_pair[pair_idx] -= 1
-                    # Clear cache after finishing each pair's worth of tasks
                     if tasks_remaining_per_pair[pair_idx] == 0:
                         frames_processed_since_cache_clear += 1
                         if frames_processed_since_cache_clear >= clear_cache_after_n_frames:
                             print("Comfy-VFI: Clearing cache...", end=' ')
                             soft_empty_cache()
-                            gc.collect()
                             frames_processed_since_cache_clear = 0
                             print("Done cache clearing")
 
                 pos += len(batch_tasks)
 
-        # Assemble output: each original frame followed by its interpolated frames
-        output_frames: typing.List[torch.Tensor] = []
-        for pair_idx in range(n_pairs):
-            output_frames.append(frames[pair_idx : pair_idx + 1].to(dtype=torch_dtype))
-            for mid in results[pair_idx]:
-                output_frames.append(mid)
-        output_frames.append(frames[-1:].to(dtype=torch_dtype))
-
-        print("Comfy-VFI: Final clearing cache...", end=' ')
-        soft_empty_cache()
-        print("Done cache clearing")
-        print(f"Comfy-VFI done! {sum(len(v) for v in results.values()) + len(frames)} frames generated")
-
-        # Always return float32 — numpy and all downstream ComfyUI nodes require it
-        out_tensor = torch.cat(output_frames, dim=0).to(torch.float32)
-        return (postprocess_frames(out_tensor),)
+        print(f"Comfy-VFI done! {output_count} frames generated")
+        return (postprocess_frames(output_frames),)

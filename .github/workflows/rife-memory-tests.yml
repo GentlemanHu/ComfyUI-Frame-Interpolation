@@ -1,0 +1,33 @@
+name: RIFE Memory Regression Tests
+
+on:
+  push:
+    paths:
+      - 'vfi_models/rife/**'
+      - 'tests/test_rife_memory.py'
+      - '.github/workflows/rife-memory-tests.yml'
+  pull_request:
+    paths:
+      - 'vfi_models/rife/**'
+      - 'tests/test_rife_memory.py'
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install CPU-only test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy packaging
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Compile RIFE sources
+        run: python -m compileall -q vfi_models/rife
+      - name: CPU-only RIFE regression tests
+        run: python -m unittest discover -s tests -p 'test_rife_memory.py' -v
