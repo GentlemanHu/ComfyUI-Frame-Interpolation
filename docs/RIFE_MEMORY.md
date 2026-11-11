@@ -32,13 +32,43 @@ For very long clips, stream RIFE from a video file and encode output in chunks.
 The `clear_cache_after_n_frames` option calls CUDA cache cleaning, which does
 **not** free live CPU frame tensors. Turning it down is not a fix for CPU OOM.
 
-## Important: two different RIFE node packages
+## Drop-in compatibility with GACLove RIFEInterpolation
 
-A workflow containing the node type **`RIFEInterpolation`** with `aux_id`
-`GACLove/ComfyUI-VFI` uses a **different implementation** from this fork's
-`RIFE VFI`. Installing this fork does not automatically replace that node.
-To benefit from this patch, explicitly use this fork's RIFE VFI node and adjust
-frame-rate/multiplier settings.
+**No workflow changes required.** This fork registers both:
+
+- `RIFE VFI`: original Fannovel16 multiplier-based RIFE node
+- `RIFEInterpolation`: FPS-based compatibility node with the exact same
+  GACLove widgets (`images`, `source_fps`, `target_fps`, `scale`,
+  `model_name`, `batch_size`, `use_fp16`).
+
+Existing H3 V3 JSON continues to use the original `RIFEInterpolation` ID,
+including non-integer 24→60fps conversion, unchanged. No need to replace
+or reconnect any node. The fork alone provides the implementation.
+
+If the old GACLove extension remains installed, both extensions may register
+the same ID. This fork's on-prompt handler selects its RAM-safe class before
+validation/execution regardless of custom-node load order, without modifying
+the other extension's files.
+
+The original `flownet.pkl` RIFE 4.26 checkpoint is reused from your
+ComfyUI model folders or sibling GACLove installation when available.
+If missing, it is downloaded from the official RIFE v4.26 archive
+automatically on first use. Only training-only `teacher.*` and
+`caltime.*` keys are ignored. All inference weights are strictly validated.
+
+Small clips use a single preallocated FP32 CPU tensor for maximum speed.
+Large clips automatically fall back to a disk-backed mmap when RAM/cgroup
+headroom is low. Batch GPU inference is preserved and retries with smaller
+batches on GPU OOM; the model is offloaded from VRAM when done.
+
+The automatic mmap fallback is not equivalent to end-to-end streaming:
+ComfyUI may still retain large IMAGE input/output tensors and other nodes
+can duplicate them. It reduces the risk of OOM but cannot guarantee that
+an arbitrarily long/high-resolution workflow fits on a finite machine.
+
+No environment variable is required. Optionally set
+`RIFE_OUTPUT_DISK_DIR=/notebooks` to choose a disk-backed folder on
+Paperspace with sufficient storage.
 
 For another maintained approach, newer ComfyUI core versions also include
 `FrameInterpolationModelLoader` and `FrameInterpolate`, with a preallocated

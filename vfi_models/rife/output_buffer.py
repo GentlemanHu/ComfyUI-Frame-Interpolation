@@ -90,7 +90,9 @@ def allocate_output(shape: Tuple[int, ...], storage: str = "auto", reserve_ram_g
     reserve = max(0, int(reserve_ram_gb * _GIB))
     disk = storage == "disk" or (
         storage == "auto" and available is not None
-        and nbytes > max(0, int(available * 0.80) - reserve)
+        # Keep headroom for one additional downstream full-image copy (e.g.
+        # video encoding or ComfyUI cache); prefer mmap before RAM gets tight.
+        and nbytes * 2 > max(0, int(available * 0.80) - reserve)
     )
     if not disk:
         try:

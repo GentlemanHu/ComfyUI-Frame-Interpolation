@@ -5,11 +5,17 @@ on:
     paths:
       - 'vfi_models/rife/**'
       - 'tests/test_rife_memory.py'
+      - 'tests/test_rife_fps_compat.py'
+      - 'tests/test_rife_node_precedence.py'
+      - 'tests/check_rife_official_weights.py'
       - '.github/workflows/rife-memory-tests.yml'
   pull_request:
     paths:
       - 'vfi_models/rife/**'
       - 'tests/test_rife_memory.py'
+      - 'tests/test_rife_fps_compat.py'
+      - 'tests/test_rife_node_precedence.py'
+      - 'tests/check_rife_official_weights.py'
 
 permissions:
   contents: read
@@ -30,4 +36,21 @@ jobs:
       - name: Compile RIFE sources
         run: python -m compileall -q vfi_models/rife
       - name: CPU-only RIFE regression tests
-        run: python -m unittest discover -s tests -p 'test_rife_memory.py' -v
+        run: python -m unittest discover -s tests -p 'test_rife_*.py' -v
+
+  official-model-smoke:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Torch CPU
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install numpy
+      - name: Validate real official 4.26 checkpoint and forward pass
+        run: python tests/check_rife_official_weights.py
