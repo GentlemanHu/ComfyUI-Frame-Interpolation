@@ -92,9 +92,9 @@ class InferenceTests(unittest.TestCase):
                     "rife49.pth", frames, multiplier=2, batch_size=3, output_storage="ram"
                 )
             self.assertEqual(tuple(result.shape), (5, 8, 8, 3))
-            torch.testing.assert_close(
+            self.assertTrue(torch.allclose(
                 result[:, 0, 0, 0], torch.tensor([0., .25, .5, .75, 1.])
-            )
+            ))
 
     def test_skip_and_model_cache_eviction(self):
         frames = torch.tensor([0., .5, 1.]).view(3, 1, 1, 1).expand(3, 8, 8, 3).clone()
@@ -110,7 +110,7 @@ class InferenceTests(unittest.TestCase):
                 node.vfi("rife49.pth", frames, multiplier=2,
                          dtype="float16", output_storage="ram")
             self.assertEqual(len(module._model_cache), 1)
-            torch.testing.assert_close(result[:, 0, 0, 0], torch.tensor([0., .5, .75, 1.]))
+            self.assertTrue(torch.allclose(result[:, 0, 0, 0], torch.tensor([0., .5, .75, 1.])))
 
 
 if __name__ == "__main__":
